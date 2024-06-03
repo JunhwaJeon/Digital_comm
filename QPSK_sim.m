@@ -1,0 +1,136 @@
+close all; clear; clc;
+%% 
+% QPSK modulation
+
+%% Parameter Setting
+Ts=10^(-3); % symbol interval
+N_d=10^4; % number of symbols
+data=randi(4,1,N_d);
+
+%% Pulse shaping filtering: raised cosine filter
+roll_off = 0.4; 
+N_T = 5; 
+RATE = 10; % oversampling rate -> 10개중 9개는 0으로 채워짐
+pls_fil = rcosdesign(roll_off, N_T, RATE, 'sqrt');
+
+%% Making Source Signal
+% Assume Zero Mean Unit Variance Complex Gaussian Noise
+% makes P_sig == SNR
+P_db=10:5:30;
+P=10.^(P_db./10);
+
+Const=sqrt(1/2)*[1+1j ; -1+1j ; -1-1j ; 1-1j];
+sym=zeros(2,N_d,length(P));
+
+% Mapping symbols to QPSK constellation 
+for p=1:length(P)
+    for i=1:length(data)
+        sym(1,i,p)=sqrt(P(p))*real(Const(data(i)));
+        sym(2,i,p)=sqrt(P(p))*imag(Const(data(i)));
+    end
+end
+
+% Symbol Pulse Shaping
+p_sym=zeros(2,RATE*N_d+1,length(P));
+
+for p=1:length(P)
+    for i=1:length(data)
+        p_sym(1,(i-1)*RATE+1,p)=sym(1,i,p);
+        p_sym(2,(i-1)*RATE+1,p)=sym(2,i,p); 
+    end
+    for i=1:2
+        pls_sym(i,:,p)=conv(p_sym(i,:,p),pls_fil,'same');
+    end
+end
+
+
+%% Carrier Signal Generation & Modulating
+Fc=2000;
+N=length(pls_sym(1,:,:));
+t=Ts/RATE*(1:N);
+C1=sqrt(2)*cos(2*pi*Fc*t);
+C2=sqrt(2)*sin(2*pi*Fc*t);
+
+% Modulating Signal
+tx=pls_sym(1,:,:).*C1+pls_sym(2,:,:).*C2;
+
+% Received Signal -> Adding White Gaussian Noise
+rx=tx+randn(1,length(tx));
+
+% Down Converting Received Signal
+rx_I=rx.*C1;
+rx_Q=rx.*C2;
+
+% Matched Filter
+for p=1:length(P)
+    fil_I(:,p)=conv(rx_I(:,:,p),pls_fil,'same');
+    fil_Q(:,p)=conv(rx_Q(:,:,p),pls_fil,'same');
+end
+
+% Sampling
+Y_I=zeros(N_d,length(P)); Y_Q=zeros(N_d,length(P));
+for p=1:length(P)
+    for i=1:N_d
+        Y_I(i,p)=fil_I((i-1)*RATE+1,p);
+        Y_Q(i,p)=fil_Q((i-1)*RATE+1,p);
+    end
+end
+
+%% Plotting Constellation Diagram for Received Signal
+figure(1)
+set(gcf,'Position',[10,10,800,800])
+
+t=tiledlayout(2,2);
+title(t,'Received Signal Constellation Diagram');
+xlabel(t,'In-Phase'); ylabel(t,'Quadrature');
+
+nexttile
+scatter(Y_I(:,1),Y_Q(:,1), 'Marker', '*'); grid on;
+title('P=10dB')
+
+nexttile
+scatter(Y_I(:,2),Y_Q(:,2), 'Marker', '*'); grid on;
+title('P=15dB')
+
+nexttile
+scatter(Y_I(:,3),Y_Q(:,3), 'Marker', '*'); grid on;
+title('P=20dB')
+
+nexttile
+scatter(Y_I(:,5),Y_Q(:,5), 'Marker', '*'); grid on;
+title('P=30dB')
+
+
+%% Theoretical SER
+T_SER=zeros(1,length(P));
+for i=1:length(P)
+    Q=qfunc(sqrt(P(i)/2));
+    T_SER(i)=1-(1-Q)^2;
+end
+
+%% Simulated SER
+r_sig=complex(Y_I,Y_Q); % received complex signal
+S_SER=zeros(1,length(P));
+for i=1:length(P)
+    err=0;
+    for j=1:N_d
+        dist=zeros(1,4);
+        for k=1:4
+            dist(k)=norm(r_sig(j,i)-sqrt(P(i))*Const(k));
+        end
+        [~,idx]=min(dist);
+        if data(j)~=idx
+            err=err+1;
+        end
+    end
+    S_SER(i)=err/N_d;
+end
+
+%% Plotting SER s
+figure(2)
+semilogy(P_db,T_SER,'-^b'); hold on; grid on;
+semilogy(P_db,S_SER,'-or');
+title('Theoretical vs Simulated SER')
+xlabel('SNR [dB]'); ylabel('SER');
+legend('Theoretical','Simulated')
+
